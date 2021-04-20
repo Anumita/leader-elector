@@ -143,7 +143,12 @@ func main() {
 		klog.Infof("%s is the leader", leader.Name)
 	}
 
-	e, err := election.NewElection(*name, *id, *namespace, *ttl, fn, client)
+	awaitElectionConfig, err := NewAwaitElectionConfig(Execute)
+	if err != nil {
+		klog.Fatal("failed to create runner: %v", err)
+	}
+
+	e, err := awaitElectionConfig.NewElection(*ttl, fn, client)
 	if err != nil {
 		klog.Fatal("failed to create election: %v", err)
 	}
@@ -153,7 +158,7 @@ func main() {
 		time.Sleep(*ttl + *ttl/2)
 	}
 
-	go election.RunElection(ctx, e)
+	go awaitElectionConfig.RunElection(ctx, e)
 
 	if len(*addr) > 0 {
 		klog.Infof("http server starting at %s", *addr)

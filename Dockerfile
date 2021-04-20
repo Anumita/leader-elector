@@ -40,7 +40,7 @@ RUN adduser \
 # STEP 3 build a release image
 ############################
 FROM scratch
-MAINTAINER Sandeep Sangamreddi <sandeepone@gmail.com>
+MAINTAINER Anumita Shenoy <anumitashenoy@gmail.com>
 
 # Import from builder.
 COPY --from=alpine /usr/share/zoneinfo /usr/share/zoneinfo
