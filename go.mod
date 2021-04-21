@@ -3,7 +3,10 @@ module github.com/gleez/leader-elector
 go 1.13
 
 require (
+	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b
 	github.com/sirupsen/logrus v1.8.1
+	github.com/spf13/cobra v1.1.3 // indirect
+	gomodules.xyz/x v0.0.0-20201105065653-91c568df6331 // indirect
 	k8s.io/api v0.17.2
 	k8s.io/apimachinery v0.17.2
 	k8s.io/client-go v0.17.2

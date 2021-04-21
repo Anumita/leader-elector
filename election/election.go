@@ -19,30 +19,22 @@ package election
 import (
 	"context"
 	"os"
-//	"sync"
 	"time"
 	"fmt"
 	"net"
 	"net/http"
 	"encoding/json"
-	"github.com/sirupsen/logrus"
+    "github.com/golang/glog"
 	"k8s.io/apimachinery/pkg/api/errors"
 
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-//	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
-//	"k8s.io/client-go/kubernetes/scheme"
-//	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
-//	"k8s.io/client-go/tools/record"
-//	"k8s.io/klog"
 )
 
 const (
-	startBackoff = time.Second
-	maxBackoff   = time.Minute
 	AwaitElectionNameKey           = "ELECTION_NAME"
 	AwaitElectionLockNameKey       = "LOCK_NAME"
 	AwaitElectionLockNamespaceKey  = "LOCK_NAMESPACE"
@@ -55,8 +47,6 @@ const (
 	AwaitElectionServicePortsJson  = "SERVICE_PORTS_JSON"
 )
 
-var log = logrus.New()
-
 type AwaitElection struct {
 	Name             string
 	LockName         string
@@ -67,6 +57,9 @@ type AwaitElection struct {
 	ServiceNamespace string
 	PodIP            string
 	NodeName         *string
+	LeaseDuration    time.Duration
+	RenewDeadline    time.Duration
+	RetryPeriod      time.Duration
 	ServicePorts     []apiv1.EndpointPort
 }
 
@@ -78,7 +71,7 @@ func (e *ConfigError) Error() string {
 	return fmt.Sprintf("config: missing required environment variable: '%s'", e.missingEnv)
 }
 
-func NewAwaitElectionConfig() (*AwaitElection, error) {
+func NewAwaitElectionConfig(leaseDuration time.Duration, renewDeadline time.Duration, retryPeriod time.Duration) (*AwaitElection, error) {
 	name := os.Getenv(AwaitElectionNameKey)
 	if name == "" {
 		return nil, &ConfigError{missingEnv: AwaitElectionNameKey}
@@ -128,37 +121,17 @@ func NewAwaitElectionConfig() (*AwaitElection, error) {
 		ServiceName:      serviceName,
 		ServiceNamespace: serviceNamespace,
 		ServicePorts:     servicePorts,
+		LeaseDuration:    leaseDuration,
+		RenewDeadline:    renewDeadline,
+		RetryPeriod:      retryPeriod,
 	}, nil
 }
 
-
-// NewSimpleElection creates an election, it defaults namespace to 'default' and ttl to 10s
-//func (el *AwaitElection) NewSimpleElection(c *kubernetes.Clientset) (*leaderelection.LeaderElector, error) {
-//	return el.NewElection(10*time.Second, c)
-//}
-
-func (el *AwaitElection) Run(ttl time.Duration, c *kubernetes.Clientset) error {
+func (el *AwaitElection) Run(c *kubernetes.Clientset) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-//	// Not running with leader election/kubernetes context, just run the provided function
-//	if !el.WithElection {
-//		log.Info("not running with leader election")
-//		return el.LeaderExec(ctx)
-//	}
-
-	// Create kubernetes client
-//	kubeCfg, err := rest.InClusterConfig()
-//	if err != nil {
-//		return fmt.Errorf("failed to read cluster config: %w", err)
-//	}
-//
-//	kubeClient, err := kubernetes.NewForConfig(kubeCfg)
-//	if err != nil {
-//		return fmt.Errorf("failed to create KubeClient for config: %w", err)
-//	}
-
-	// result of the LeaderExec(ctx) command will be send over this channel
+	// result of the setServiceEndpoint command will be send over this channel
 	execResult := make(chan error)
 
 	// Create lock for leader election using provided settings
@@ -178,9 +151,9 @@ func (el *AwaitElection) Run(ttl time.Duration, c *kubernetes.Clientset) error {
 		Name:            el.Name,
 		ReleaseOnCancel: true,
 		// Suggested default values
-		LeaseDuration: ttl, //15 * time.Second,
-		RenewDeadline: ttl / 2, //10 * time.Second,
-		RetryPeriod:   ttl / 4, //2 * time.Second,
+		LeaseDuration: el.LeaseDuration, //15 * time.Second,
+		RenewDeadline: el.RenewDeadline, //10 * time.Second,
+		RetryPeriod:   el.RetryPeriod, //2 * time.Second,
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(ctx context.Context) {
 				// First we need to register our pod as the service endpoint
@@ -194,10 +167,10 @@ func (el *AwaitElection) Run(ttl time.Duration, c *kubernetes.Clientset) error {
 				// execution path for as long as we want.
 			},
 			OnNewLeader: func(identity string) {
-				log.Infof("long live our new leader: '%s'!", identity)
+				glog.Infoln("long live our new leader: '%s'!", identity)
 			},
 			OnStoppedLeading: func() {
-				log.Info("lost leader status")
+				glog.Infoln("lost leader status")
 			},
 		},
 	}
@@ -224,92 +197,6 @@ func (el *AwaitElection) Run(ttl time.Duration, c *kubernetes.Clientset) error {
 	}
 }
 
-// NewElection creates an election.  'namespace'/'election' should be an existing Kubernetes Service
-// 'id' is the id if this leader, should be unique.
-//func (el *AwaitElection) NewElection(ttl time.Duration, c *kubernetes.Clientset) (*leaderelection.LeaderElector, error) {
-//
-//	broadcaster := record.NewBroadcaster()
-//	broadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: v1core.New(c.CoreV1().RESTClient()).Events("")})
-//
-//	hostname, err := os.Hostname()
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	// we use the Lease lock type since edits to Leases are less common
-//	// and fewer objects in the cluster watch "all Leases".
-//	lock := &resourcelock.LeaseLock{
-//		LeaseMeta: metav1.ObjectMeta{
-//			Name:      el.LockName,
-//			Namespace: el.LockNamespace,
-//		},
-//		Client: c.CoordinationV1(),
-//		LockConfig: resourcelock.ResourceLockConfig{
-//			Identity:      el.LeaderIdentity,
-//			EventRecorder: broadcaster.NewRecorder(scheme.Scheme, apiv1.EventSource{Component: "leader-elector", Host: hostname}),
-//		},
-//	}
-//
-//	execResult := make(chan error)
-//
-//	wg := &sync.WaitGroup{}
-//	defer wg.Wait()
-//
-//	config := leaderelection.LeaderElectionConfig{
-//		Lock: lock,
-//		// IMPORTANT: you MUST ensure that any code you have that
-//		// is protected by the lease must terminate **before**
-//		// you call cancel. Otherwise, you could have a background
-//		// loop still running and another process could
-//		// get elected before your background loop finished, violating
-//		// the stated goal of the lease.
-//		ReleaseOnCancel: true,
-//		LeaseDuration:   ttl,
-//		RenewDeadline:   ttl / 2,
-//		RetryPeriod:     ttl / 4,
-//		Callbacks: leaderelection.LeaderCallbacks{
-//			OnStartedLeading: func(ctx context.Context) {
-//
-//
-//				// we're notified when we start - this is where you would
-//				// usually put your code
-//				err := el.setServiceEndpoint(ctx, c)
-//				if err != nil {
-//					execResult <- err
-//					return
-//				}
-//
-//				klog.Infof("endpoint created")
-//
-//				// leave()
-//			},
-//			OnStoppedLeading: func() {
-//				// we can do cleanup here
-//				klog.Infof("leader lost: %s",  el.LeaderIdentity)
-//				// os.Exit(0)
-//				// empty string means leader is unknown
-//				
-//			},
-//			OnNewLeader: func(identity string) {
-//				// we're notified when new leader elected
-//				if identity ==  el.LeaderIdentity {
-//					// I just got the lock
-//					return
-//				}
-//				klog.Infof("may the force be with our new leader: %s", identity)
-//			},
-//		},
-//	}
-//
-//        r := <-execResult
-//	if r != nil {
-//	    klog.Infof("erroror %v", r)
-//	    return nil, r
-//	}
-//
-//
-//	return leaderelection.NewLeaderElector(config)
-//}
 
 func (el *AwaitElection) setServiceEndpoint(ctx context.Context, client *kubernetes.Clientset) error {
 	if el.ServiceName == "" {
@@ -345,26 +232,27 @@ func (el *AwaitElection) startStatusEndpoint(ctx context.Context, elector *leade
 	statusServerResult := make(chan error)
 
 	if el.StatusEndpoint == "" {
-		log.Info("no status endpoint specified, will not be created")
+		glog.Infoln("no status endpoint specified, will not be created")
 		return statusServerResult
 	}
 
 	serveMux := http.NewServeMux()
-	serveMux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+	serveMux.HandleFunc("/", func(res http.ResponseWriter, request *http.Request) {
 		err := elector.Check(2 * time.Second)
 		if err != nil {
-			log.WithField("err", err).Error("failed to step down gracefully, reporting unhealthy status")
-			writer.WriteHeader(500)
-			_, err := writer.Write([]byte("{\"status\": \"expired\"}"))
+			glog.Errorf("Failed to step down gracefully, reporting unhealthy status: %v", err)
+			res.WriteHeader(http.StatusInternalServerError)
+			message := fmt.Sprintf("Lease has expired. Error: %v", err)
+			_, err:= res.Write([]byte(message))
 			if err != nil {
-				log.WithField("err", err).Error("failed to serve request")
+				glog.Errorf("Failed to serve request. Error: %v", err)
 			}
 			return
 		}
-
-		_, err = writer.Write([]byte("{\"status\": \"ok\"}"))
+	
+		_, err = res.Write([]byte("{\"status\": \"ok\"}"))
 		if err != nil {
-			log.WithField("err", err).Error("failed to serve request")
+			glog.Errorf("Failed to serve request. Error: %v", err)
 		}
 	})
 
@@ -381,7 +269,3 @@ func (el *AwaitElection) startStatusEndpoint(ctx context.Context, elector *leade
 	return statusServerResult
 }
 
-// RunElection runs an election given an leader elector.  Doesn't return.
-//func (el *AwaitElection) RunElection(ctx context.Context, e *leaderelection.LeaderElector) {
-//	wait.UntilWithContext(ctx, e.Run, 0)
-//}
