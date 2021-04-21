@@ -153,8 +153,9 @@ func main() {
 	loggingFlags := flag.NewFlagSet("leader-elector", flag.ExitOnError)
 	AddFlags(loggingFlags)
 	klog.InitFlags(loggingFlags)
+	flag.Set("v", "9")
 	loggingFlags.Parse(os.Args[1:])
-    
+    //fmt.Println("%+v", loggingFlags)
 	defer klog.Flush()
 	
 	runElection()
