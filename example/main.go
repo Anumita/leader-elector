@@ -17,23 +17,25 @@ limitations under the License.
 package main
 
 import (
-	"context"
-	"encoding/json"
+//	"context"
+//	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
+//	"os/signal"
+//	"syscall"
 	"time"
+	"k8s.io/klog/v2"
 
 	"github.com/gleez/leader-elector/election"
-
+        "github.com/sirupsen/logrus"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/klog"
+	//"k8s.io/klog"
+	"k8s.io/client-go/tools/leaderelection"
 )
 
 var (
@@ -41,6 +43,8 @@ var (
 	// LDFLAGS should overwrite these variables in build time.
 	Version  string
 	Revision string
+	awaitElectionConfig *election.AwaitElection
+	leaderElector *leaderelection.LeaderElector
 
 	name        = flag.String("election", "", "The name of the election")
 	id          = flag.String("id", hostname(), "The id of this participant")
@@ -51,9 +55,12 @@ var (
 	addr        = flag.String("http", "", "If non-empty, stand up a simple webserver that reports the leader state")
 	initialWait = flag.Bool("initial-wait", false, "wait for the old lease being expired if no leader exist.")
 	versionFlag = flag.Bool("version", false, "display version and exit")
+	verbose =  flag.Int("v", 5, "verbose")
 
-	leader = &LeaderData{}
+//	leader = &LeaderData{}
 )
+
+var log = logrus.New()
 
 func makeClient() (*kubernetes.Clientset, error) {
 	var cfg *rest.Config
@@ -79,20 +86,35 @@ func makeClient() (*kubernetes.Clientset, error) {
 }
 
 // LeaderData represents information about the current leader
-type LeaderData struct {
-	Name string `json:"name"`
-}
+//type LeaderData struct {
+//	Name string `json:"name"`
+//}
 
 func webHandler(res http.ResponseWriter, req *http.Request) {
-	data, err := json.Marshal(leader)
-	if err != nil {
-		res.WriteHeader(http.StatusInternalServerError)
-		res.Write([]byte(err.Error()))
-		return
+	err := leaderElector.Check(2 * time.Second)
+        if err != nil {
+	    log.WithField("err", err).Error("failed to step down gracefully, reporting unhealthy status")
+	    res.WriteHeader(500)
+	     _, err := res.Write([]byte("{\"status\": \"expired\"}"))
+	    if err != nil {
+		log.WithField("err", err).Error("failed to serve request")
+	    }
+	    return
 	}
 
-	res.WriteHeader(http.StatusOK)
-	res.Write(data)
+	_, err = res.Write([]byte("{\"status\": \"ok\"}"))
+	if err != nil {
+			log.WithField("err", err).Error("failed to serve request")
+	}
+//	data, err := json.Marshal(leader)
+//	if err != nil {
+//		res.WriteHeader(http.StatusInternalServerError)
+//		res.Write([]byte(err.Error()))
+//		return
+//	}
+//
+//	res.WriteHeader(http.StatusOK)
+//	res.Write(data)
 }
 
 func validateFlags() {
@@ -110,7 +132,11 @@ func validateFlags() {
 }
 
 func main() {
+	flag.Set("alsologtostderr", "true")
+	flag.Set("v", "10")
 	flag.Parse()
+	klogFlags := flag.NewFlagSet("klog", flag.ExitOnError)
+	klog.InitFlags(klogFlags)
 
 	if *versionFlag {
 		fmt.Printf("leader-elector version=%s revision=%s\n", Version, Revision)
@@ -119,8 +145,8 @@ func main() {
 
 	validateFlags()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+//	ctx, cancel := context.WithCancel(context.Background())
+//	defer cancel()
 
 	client, err := makeClient()
 	if err != nil {
@@ -130,43 +156,48 @@ func main() {
 	// listen for interrupts or the Linux SIGTERM signal and cancel
 	// our context, which the leader election code will observe and
 	// step down
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-ch
-		klog.Info("Received termination, signaling shutdown")
-		cancel()
-	}()
+//	ch := make(chan os.Signal, 1)
+//	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+//	go func() {
+//		<-ch
+//		klog.Info("Received termination, signaling shutdown")
+//		cancel()
+//	}()
 
-	fn := func(str string) {
-		leader.Name = str
-		klog.Infof("%s is the leader", leader.Name)
-	}
+//	fn := func(str string) {
+//		leader.Name = str
+//		klog.Infof("%s is the leader", leader.Name)
+//	}
 
-	awaitElectionConfig, err := NewAwaitElectionConfig(Execute)
+	awaitElectionConfig, err := election.NewAwaitElectionConfig()
 	if err != nil {
 		klog.Fatal("failed to create runner: %v", err)
 	}
 
-	e, err := awaitElectionConfig.NewElection(*ttl, fn, client)
-	if err != nil {
-		klog.Fatal("failed to create election: %v", err)
-	}
-
+//	e, err := awaitElectionConfig.NewElection(*ttl, client)
+//	if err != nil {
+//		klog.Fatal("failed to create election: %v", err)
+//	}
+//
 	if *initialWait {
 		klog.Info("wait for the old lease being expired if no leader exist, duration(=lease-duration+renew-deadline)", (*ttl + *ttl/2).String())
 		time.Sleep(*ttl + *ttl/2)
 	}
 
-	go awaitElectionConfig.RunElection(ctx, e)
-
-	if len(*addr) > 0 {
-		klog.Infof("http server starting at %s", *addr)
-		http.HandleFunc("/", webHandler)
-		klog.Fatal(http.ListenAndServe(*addr, nil))
-	} else {
-		select {}
+	err = awaitElectionConfig.Run(*ttl, client)
+	if err != nil {
+            klog.Fatal("failed to run: %v", err)
 	}
+
+//	go awaitElectionConfig.RunElection(ctx, e)
+//
+//	if len(*addr) > 0 {
+//		klog.Infof("http server starting at %s", *addr)
+//		http.HandleFunc("/", webHandler)
+//		klog.Fatal(http.ListenAndServe(*addr, nil))
+//	} else {
+//		select {}
+//	}
 }
 
 func hostname() string {
