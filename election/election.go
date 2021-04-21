@@ -30,8 +30,11 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/tools/record"
 )
 
 const (
@@ -134,6 +137,13 @@ func (el *AwaitElection) Run(c *kubernetes.Clientset) error {
 	// result of the setServiceEndpoint command will be send over this channel
 	execResult := make(chan error)
 
+	broadcaster := record.NewBroadcaster()
+	broadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: v1core.New(c.CoreV1().RESTClient()).Events("")})
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		return err
+	}
 	// Create lock for leader election using provided settings
 	lock := resourcelock.LeaseLock{
 		LeaseMeta: metav1.ObjectMeta{
@@ -143,6 +153,7 @@ func (el *AwaitElection) Run(c *kubernetes.Clientset) error {
 		Client: c.CoordinationV1(),
 		LockConfig: resourcelock.ResourceLockConfig{
 			Identity: el.LeaderIdentity,
+			EventRecorder: broadcaster.NewRecorder(scheme.Scheme, apiv1.EventSource{Component: "leader-elector", Host: hostname}),
 		},
 	}
 
