@@ -24,7 +24,7 @@ import (
 	"net"
 	"net/http"
 	"encoding/json"
-    "github.com/golang/glog"
+	"k8s.io/klog/v2"
 	"k8s.io/apimachinery/pkg/api/errors"
 
 	apiv1 "k8s.io/api/core/v1"
@@ -178,10 +178,10 @@ func (el *AwaitElection) Run(c *kubernetes.Clientset) error {
 				// execution path for as long as we want.
 			},
 			OnNewLeader: func(identity string) {
-				glog.Infoln("long live our new leader: '%s'!", identity)
+				klog.Infoln("long live our new leader: '%s'!", identity)
 			},
 			OnStoppedLeading: func() {
-				glog.Infoln("lost leader status")
+				klog.Infoln("lost leader status")
 			},
 		},
 	}
@@ -243,7 +243,7 @@ func (el *AwaitElection) startStatusEndpoint(ctx context.Context, elector *leade
 	statusServerResult := make(chan error)
 
 	if el.StatusEndpoint == "" {
-		glog.Infoln("no status endpoint specified, will not be created")
+		klog.Infoln("no status endpoint specified, will not be created")
 		return statusServerResult
 	}
 
@@ -251,19 +251,19 @@ func (el *AwaitElection) startStatusEndpoint(ctx context.Context, elector *leade
 	serveMux.HandleFunc("/", func(res http.ResponseWriter, request *http.Request) {
 		err := elector.Check(2 * time.Second)
 		if err != nil {
-			glog.Errorf("Failed to step down gracefully, reporting unhealthy status: %v", err)
+			klog.Errorf("Failed to step down gracefully, reporting unhealthy status: %v", err)
 			res.WriteHeader(http.StatusInternalServerError)
 			message := fmt.Sprintf("Lease has expired. Error: %v", err)
 			_, err:= res.Write([]byte(message))
 			if err != nil {
-				glog.Errorf("Failed to serve request. Error: %v", err)
+				klog.Errorf("Failed to serve request. Error: %v", err)
 			}
 			return
 		}
 	
 		_, err = res.Write([]byte("{\"status\": \"ok\"}"))
 		if err != nil {
-			glog.Errorf("Failed to serve request. Error: %v", err)
+			klog.Errorf("Failed to serve request. Error: %v", err)
 		}
 	})
 
